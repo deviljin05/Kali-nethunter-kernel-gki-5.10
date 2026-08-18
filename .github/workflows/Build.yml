@@ -644,6 +644,8 @@ jobs:
           done
           echo ""
           echo "If either symbol above shows '=y' (built-in) instead of '=m' (module) or its previous stock value, STOP — do not flash. That mismatch is what breaks the vendor's prebuilt Wi-Fi vendor_dlkm module and causes a bootloop. Compare against a build with enable_nethunter=false to confirm nothing changed."
+
+      - name: Locate built Image
         working-directory: kernel_workspace
         run: |
           set -euo pipefail
