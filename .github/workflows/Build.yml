@@ -485,57 +485,83 @@ jobs:
             echo "CONFIG_TMPFS_XATTR=y"
           } >> gki_defconfig
 
-      - name: Set NetHunter recommended kernel configs (Kconfig only, KMI-safe)
+      - name: Set NetHunter recommended kernel configs (safe merge, KMI-aware)
         if: ${{ github.event.inputs.enable_nethunter == 'true' }}
+        working-directory: kernel_workspace/common/arch/arm64/configs
         run: |
-          cd kernel_workspace/common/arch/arm64/configs
-          # Kali's own "kernel configuration for NetHunter" guide, grouped
-          # as documented. All plain bool Kconfig symbols — no struct
-          # layout change, so safe alongside SUSFS/KSU/Droidspaces/BBRv3
-          # without any kABI patch.
-          {
-            # --- HID: keyboard/mouse passthrough + HID-based attacks ---
-            echo "CONFIG_HID=y"
-            echo "CONFIG_USB_HID=y"
-            echo "CONFIG_HIDRAW=y"
-            echo "CONFIG_HID_LOGITECH=y"
-            echo "CONFIG_HID_LOGITECH_DJ=y"
-            echo "CONFIG_HID_MULTITOUCH=y"
+          set -euo pipefail
+          # ROOT CAUSE OF PREVIOUS BOOTLOOP: this step used to blindly
+          # append every symbol with `>>`, which OVERRIDES whatever the
+          # stock GKI defconfig already had — including flipping
+          # CFG80211/MAC80211 from their stock "=m" (module) to "=y"
+          # (built-in). Vendor's proprietary Wi-Fi driver ships as a
+          # prebuilt vendor_dlkm .ko that depends on cfg80211/mac80211
+          # being loadable modules with a matching exported-symbol ABI
+          # (KMI). Forcing them built-in breaks that match, the vendor
+          # Wi-Fi module fails to load, and on some devices that's fatal
+          # early enough in boot to bootloop. This is a documented GKI
+          # failure mode, not a random fluke.
+          #
+          # Fix: CFG80211/MAC80211/CFG80211_WEXT are no longer touched
+          # at all — virtually every GKI defconfig already ships them
+          # correctly for the device's own Wi-Fi to work, so there was
+          # never a reason to set them ourselves.
+          #
+          # For everything else below: only APPEND a symbol if it is not
+          # already present in gki_defconfig in any form (=y, =m, or
+          # explicitly "is not set"). This never overrides a value the
+          # stock defconfig intentionally set, so it can't reintroduce
+          # the same class of bug for a symbol we don't know about yet.
+          add_if_missing() {
+            local sym="$1" val="$2"
+            if grep -qE "^${sym}=|^# ${sym} is not set" gki_defconfig; then
+              echo "skip ${sym} — already defined by stock gki_defconfig, not overriding"
+            else
+              echo "${sym}=${val}" >> gki_defconfig
+              echo "add  ${sym}=${val}"
+            fi
+          }
 
-            # --- USB gadget / ConfigFS: BadUSB (HID keystroke injection),
-            #     mass storage gadget, MTP/PTP, RNDIS/NCM network gadget ---
-            echo "CONFIG_USB_CONFIGFS=y"
-            echo "CONFIG_USB_CONFIGFS_F_HID=y"
-            echo "CONFIG_USB_CONFIGFS_F_FS=y"
-            echo "CONFIG_USB_CONFIGFS_MASS_STORAGE=y"
-            echo "CONFIG_USB_CONFIGFS_F_MTP=y"
-            echo "CONFIG_USB_CONFIGFS_F_PTP=y"
-            echo "CONFIG_USB_CONFIGFS_F_ACC=y"
-            echo "CONFIG_USB_CONFIGFS_UEVENT=y"
-            echo "CONFIG_USB_CONFIGFS_NCM=y"
-            echo "CONFIG_USB_CONFIGFS_RNDIS=y"
+          # --- HID: keyboard/mouse passthrough + HID-based attacks ---
+          add_if_missing CONFIG_HID y
+          add_if_missing CONFIG_USB_HID y
+          add_if_missing CONFIG_HIDRAW y
+          add_if_missing CONFIG_HID_LOGITECH y
+          add_if_missing CONFIG_HID_LOGITECH_DJ y
+          add_if_missing CONFIG_HID_MULTITOUCH y
 
-            # --- Wireless stack (needed by any monitor-mode/injection
-            #     adapter driver, whichever chipset you build separately) ---
-            echo "CONFIG_CFG80211=y"
-            echo "CONFIG_CFG80211_WEXT=y"
-            echo "CONFIG_MAC80211=y"
+          # --- USB gadget / ConfigFS: BadUSB (HID keystroke injection),
+          #     mass storage gadget, MTP/PTP, RNDIS/NCM network gadget ---
+          add_if_missing CONFIG_USB_CONFIGFS y
+          add_if_missing CONFIG_USB_CONFIGFS_F_HID y
+          add_if_missing CONFIG_USB_CONFIGFS_F_FS y
+          add_if_missing CONFIG_USB_CONFIGFS_MASS_STORAGE y
+          add_if_missing CONFIG_USB_CONFIGFS_F_MTP y
+          add_if_missing CONFIG_USB_CONFIGFS_F_PTP y
+          add_if_missing CONFIG_USB_CONFIGFS_F_ACC y
+          add_if_missing CONFIG_USB_CONFIGFS_UEVENT y
+          add_if_missing CONFIG_USB_CONFIGFS_NCM y
+          add_if_missing CONFIG_USB_CONFIGFS_RNDIS y
 
-            # --- Core networking for MITM / packet capture tooling ---
-            echo "CONFIG_INET=y"
-            echo "CONFIG_PACKET=y"
-            echo "CONFIG_PACKET_DIAG=y"
-            echo "CONFIG_TUN=y"
-            echo "CONFIG_IP_ADVANCED_ROUTER=y"
-            echo "CONFIG_IP_MULTIPLE_TABLES=y"
-            echo "CONFIG_IP_NF_MANGLE=y"
-            echo "CONFIG_IP_NF_TARGET_MASQUERADE=y"
-            echo "CONFIG_NETFILTER_XT_TARGET_TCPMSS=y"
-            echo "CONFIG_NETFILTER_XT_TARGET_TPROXY=y"
-            echo "CONFIG_NETFILTER_XT_MATCH_SOCKET=y"
-            echo "CONFIG_BRIDGE=y"
-            echo "CONFIG_BRIDGE_NETFILTER=y"
-          } >> gki_defconfig
+          # --- Core networking for MITM / packet capture tooling ---
+          add_if_missing CONFIG_INET y
+          add_if_missing CONFIG_PACKET y
+          add_if_missing CONFIG_PACKET_DIAG y
+          add_if_missing CONFIG_TUN y
+          add_if_missing CONFIG_IP_ADVANCED_ROUTER y
+          add_if_missing CONFIG_IP_MULTIPLE_TABLES y
+          add_if_missing CONFIG_IP_NF_MANGLE y
+          add_if_missing CONFIG_IP_NF_TARGET_MASQUERADE y
+          add_if_missing CONFIG_NETFILTER_XT_TARGET_TCPMSS y
+          add_if_missing CONFIG_NETFILTER_XT_TARGET_TPROXY y
+          add_if_missing CONFIG_NETFILTER_XT_MATCH_SOCKET y
+          add_if_missing CONFIG_BRIDGE y
+          add_if_missing CONFIG_BRIDGE_NETFILTER y
+
+      - name: Snapshot pre-build defconfig for post-build diff
+        if: ${{ github.event.inputs.enable_nethunter == 'true' }}
+        working-directory: kernel_workspace/common/arch/arm64/configs
+        run: cp gki_defconfig /tmp/gki_defconfig.pre-build
 
       - name: Apply custom kernel branding
         working-directory: kernel_workspace/common
@@ -598,7 +624,26 @@ jobs:
             exit 1
           fi
 
-      - name: Locate built Image
+      - name: Verify NetHunter configs did not flip vendor-critical symbols
+        if: ${{ github.event.inputs.enable_nethunter == 'true' }}
+        working-directory: kernel_workspace
+        run: |
+          set -euo pipefail
+          # CFG80211/MAC80211 are the two symbols that caused the earlier
+          # bootloop (forced from stock "=m" to "=y"). We no longer touch
+          # them, but this check confirms that for real, every run, so a
+          # future change to this workflow can't silently reintroduce it.
+          CFG=$(find out -name ".config" | head -n1)
+          if [ -z "$CFG" ]; then
+            echo "::error::Could not find compiled .config to verify"
+            exit 1
+          fi
+          echo "Final module type for Wi-Fi-critical symbols (must stay '=m' or whatever stock already had — should be UNCHANGED from a build with enable_nethunter=false):"
+          for SYM in CONFIG_CFG80211 CONFIG_MAC80211; do
+            grep -E "^${SYM}=|^# ${SYM} is not set" "$CFG" || echo "${SYM}: not set"
+          done
+          echo ""
+          echo "If either symbol above shows '=y' (built-in) instead of '=m' (module) or its previous stock value, STOP — do not flash. That mismatch is what breaks the vendor's prebuilt Wi-Fi vendor_dlkm module and causes a bootloop. Compare against a build with enable_nethunter=false to confirm nothing changed."
         working-directory: kernel_workspace
         run: |
           set -euo pipefail
