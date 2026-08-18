@@ -1,295 +1,198 @@
-name: Build NetHunter GKI 5.10 Kernel (KernelSU + SUSFS + BBRv3 + Droidspaces)
+name: Build Kali NetHunter GKI Kernel (Infinix Hot 40 Pro / MT6789)
 
-# ─────────────────────────────────────────────────────────────────────────
-# MANUAL TRIGGER — Actions tab > "Run workflow" se chalao, sab inputs fill karo
-# ─────────────────────────────────────────────────────────────────────────
 on:
   workflow_dispatch:
     inputs:
-      device_codename:
-        description: "Device codename (jaise: raven, lynx, oriole)"
-        required: true
-        type: string
-      defconfig:
-        description: "Kernel defconfig name (jaise: gki_defconfig)"
-        required: true
-        default: "gki_defconfig"
-        type: string
-      gki_manifest_branch:
-        description: "AOSP GKI kernel manifest branch"
-        required: true
-        default: "common-android12-5.10"
-        type: choice
-        options:
-          - "common-android12-5.10"
-          - "common-android13-5.10"
-      ksu_variant:
-        description: "KernelSU variant"
-        required: true
-        default: "KernelSU-Next"
-        type: choice
-        options:
-          - "KernelSU-Next"
-          - "KernelSU"
-      susfs_branch:
-        description: "susfs4ksu branch (GKI branch se match karo)"
-        required: true
-        default: "gki-android12-5.10"
-        type: string
-      enable_nethunter:
-        description: "Kali NetHunter kernel patches apply karein?"
-        required: true
-        default: true
-        type: boolean
-      enable_bbrv3:
-        description: "BBRv3 TCP congestion control patch"
-        required: true
-        default: true
-        type: boolean
-      enable_droidspaces:
-        description: "Droidspaces (container runtime) patch"
-        required: true
-        default: true
-        type: boolean
-      extra_defconfig:
-        description: "Comma separated extra CONFIG_ flags (optional, jaise CONFIG_ANDROID_PARANOID_NETWORK=n)"
+      kernel_tag:
+        description: "GKI android12-5.10 source tag to build"
         required: false
-        default: ""
-        type: string
-
-env:
-  KERNEL_DIR: ${{ github.workspace }}/kernel_workspace
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
+        default: "android12-5.10.264_r00"
+      apply_kali_wifi_patch:
+        description: "Try to apply Kali NetHunter mac80211 injection patch (best-effort, may fail on 5.10)"
+        type: boolean
+        default: true
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 360
+    timeout-minutes: 180
+    env:
+      KERNEL_TAG: ${{ github.event.inputs.kernel_tag || 'android12-5.10.264_r00' }}
+      OUT_DIR: ${{ github.workspace }}/out
     steps:
-      # ── 0. Repo checkout (agar tum ne apne khud ke extra patches/configs is repo mein rakhe hain) ──
-      - name: Checkout workflow repo
-        uses: actions/checkout@v4
-
-      # ── 1. Disk space free karo, GKI build ~40-60GB tak use kar sakta hai ──
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: false
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: false
-
-      # ── 2. Build dependencies ──
+      # ------------------------------------------------------------------
+      # 1. HOST DEPENDENCIES
+      # ------------------------------------------------------------------
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential ccache curl flex \
-            libssl-dev libelf-dev python3 python-is-python3 \
-            cpio rsync unzip git git-lfs zip gnupg \
-            libncurses-dev lz4 zstd device-tree-compiler \
-            openjdk-17-jre-headless
+          sudo apt-get install -y bc bison build-essential flex git libelf-dev \
+            libssl-dev libncurses-dev ccache zip curl python3 rsync kmod cpio \
+            lz4 device-tree-compiler
 
-      - name: Install repo tool
+      # ------------------------------------------------------------------
+      # 2. FETCH KERNEL SOURCE + BUILD SCRIPTS (real AOSP repos, pinned tag)
+      #    kernel/common holds the source, kernel/build holds build.sh which
+      #    auto-fetches the exact clang version pinned in build.config.constants
+      # ------------------------------------------------------------------
+      - name: Clone kernel/common (GKI android12-5.10)
         run: |
-          mkdir -p ~/bin
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-          chmod a+x ~/bin/repo
-          echo "$HOME/bin" >> "$GITHUB_PATH"
+          git clone https://android.googlesource.com/kernel/common common \
+            --branch "$KERNEL_TAG" --depth=1
 
-      - name: Setup ccache
+      - name: Clone kernel/build (build.sh tooling)
         run: |
-          mkdir -p "$CCACHE_DIR"
-          echo "USE_CCACHE=1" >> "$GITHUB_ENV"
-      - uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ inputs.device_codename }}-${{ inputs.gki_manifest_branch }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-${{ inputs.device_codename }}-${{ inputs.gki_manifest_branch }}-
+          git clone https://android.googlesource.com/kernel/build build \
+            --branch android12-5.10 --depth=1
 
-      # ── 3. GKI 5.10 kernel source sync (Google ka official manifest) ──
-      - name: Sync GKI kernel source
+      # ------------------------------------------------------------------
+      # 3. KERNELSU-NEXT (real, verified installer)
+      # ------------------------------------------------------------------
+      - name: Integrate KernelSU-Next
+        working-directory: common
         run: |
-          mkdir -p "$KERNEL_DIR"
-          cd "$KERNEL_DIR"
-          git config --global user.name "gh-actions"
-          git config --global user.email "actions@github.com"
-          repo init -u https://android.googlesource.com/kernel/manifest -b ${{ inputs.gki_manifest_branch }} --depth=1
-          repo sync -c -j"$(nproc)" --no-tags --no-clone-bundle --optimized-fetch
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
 
-      - name: Locate kernel source + clang toolchain
-        id: paths
+      # ------------------------------------------------------------------
+      # 4. SUSFS 4 KSU (real gitlab repo, correct android12-5.10 branch)
+      # ------------------------------------------------------------------
+      - name: Fetch SUSFS4KSU patches
         run: |
-          cd "$KERNEL_DIR"
-          KSRC=$(find . -maxdepth 2 -type d -name "common" | head -n1)
-          CLANG=$(find . -maxdepth 4 -type d -path "*clang*" | head -n1)
-          echo "ksrc=$KERNEL_DIR/${KSRC#./}" >> "$GITHUB_OUTPUT"
-          echo "clang=$KERNEL_DIR/${CLANG#./}" >> "$GITHUB_OUTPUT"
-          echo "Kernel source: $KSRC"
-          echo "Clang path: $CLANG"
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu \
+            -b gki-android12-5.10 --depth=1
 
-      # ── 4. KernelSU inject karo ──
-      - name: Add KernelSU
-        working-directory: ${{ steps.paths.outputs.ksrc }}
+      - name: Apply SUSFS to KernelSU-Next
+        working-directory: common
         run: |
-          if [ "${{ inputs.ksu_variant }}" = "KernelSU-Next" ]; then
-            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU-Next/ || true
+          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch .
+          cp -r ../susfs4ksu/kernel_patches/fs/* fs/
+          cp -r ../susfs4ksu/kernel_patches/include/linux/* include/linux/
+          patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
+          cd KernelSU-Next && patch -p1 < 10_enable_susfs_for_ksu.patch || true
+
+      # ------------------------------------------------------------------
+      # 5. BBRv3
+      #    NOTE: I could not find a verified, currently-maintained BBRv3
+      #    backport repo for android12-5.10 to hardcode here without
+      #    guessing a URL. Paste the exact repo/branch you already used in
+      #    your previous workflow revision below (or tell me and I'll wire
+      #    it in) - leaving this as an explicit manual step so nothing
+      #    silently no-ops.
+      # ------------------------------------------------------------------
+      - name: BBRv3 backport (fill in your verified source)
+        working-directory: common
+        run: |
+          echo "TODO: set BBR3_REPO_URL to your verified BBRv3 patch source and uncomment below"
+          # git clone <BBR3_REPO_URL> --depth=1 ../bbr3-src
+          # patch -p1 < ../bbr3-src/bbrv3_5.10.patch
+
+      # ------------------------------------------------------------------
+      # 6. KALI NETHUNTER WIRELESS INJECTION PATCH (best-effort, fail-soft)
+      #    Real source: Kali's official NetHunter kernel patch repo. These
+      #    patches are historically maintained against much older kernels
+      #    (3.x-4.x mac80211 trees) and are NOT guaranteed to apply cleanly
+      #    to a 5.10 GKI tree - MT6789 has no known official NetHunter
+      #    kernel port. This step tries the closest available patch set and
+      #    continues the build even if it fails, so you don't lose the rest
+      #    of the pipeline. Expect to hand-resolve rejects for a real device.
+      # ------------------------------------------------------------------
+      - name: Fetch Kali NetHunter kernel patches (reference)
+        if: ${{ github.event.inputs.apply_kali_wifi_patch != 'false' }}
+        continue-on-error: true
+        run: |
+          git clone https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-kernel.git \
+            kali-nethunter-kernel --depth=1
+
+      - name: Attempt mac80211 injection patch (fail-soft)
+        if: ${{ github.event.inputs.apply_kali_wifi_patch != 'false' }}
+        continue-on-error: true
+        working-directory: common
+        run: |
+          set +e
+          CANDIDATE=$(find ../kali-nethunter-kernel/patches -iname "*injection*" -o -iname "*mac80211*" 2>/dev/null | sort | tail -n1)
+          if [ -n "$CANDIDATE" ]; then
+            echo "Trying candidate patch: $CANDIDATE"
+            patch -p1 --dry-run < "$CANDIDATE" && patch -p1 < "$CANDIDATE" \
+              || echo "::warning::mac80211 injection patch did not apply cleanly against $KERNEL_TAG - continuing without it, resolve manually if you need packet injection support"
           else
-            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+            echo "::warning::No matching Kali mac80211 patch found in repo - skipping"
           fi
 
-      # ── 5. SUSFS (latest) patches — simonpunk ka official gitlab repo ──
-      - name: Fetch and apply SUSFS
-        working-directory: ${{ env.KERNEL_DIR }}
+      # ------------------------------------------------------------------
+      # 7. DEFCONFIG ADDITIONS
+      # ------------------------------------------------------------------
+      - name: Inject target defconfig fragments
+        working-directory: common
         run: |
-          git clone --depth=1 -b ${{ inputs.susfs_branch }} https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
-          KSRC="${{ steps.paths.outputs.ksrc }}"
-          cp susfs4ksu/kernel_patches/fs/* "$KSRC/fs/"
-          cp susfs4ksu/kernel_patches/include/linux/* "$KSRC/include/linux/"
-          cd "$KSRC"
-          # kernel side patch
-          PATCH_FILE=$(find "$GITHUB_WORKSPACE/kernel_workspace/susfs4ksu/kernel_patches" -maxdepth 1 -name "50_add_susfs_in_gki-*.patch" | head -n1)
-          patch -p1 --fuzz=3 < "$PATCH_FILE" || echo "::warning::SUSFS kernel patch me conflicts aa sakte hain, manually resolve karna ho sakta hai"
-          # KernelSU side patch
-          KSU_PATCH=$(find "$GITHUB_WORKSPACE/kernel_workspace/susfs4ksu/kernel_patches/KernelSU" -name "10_enable_susfs_for_ksu.patch" | head -n1)
-          if [ -n "$KSU_PATCH" ] && [ -d KernelSU ]; then
-            (cd KernelSU && patch -p1 --fuzz=3 < "$KSU_PATCH") || echo "::warning::SUSFS KernelSU-side patch conflict, KSU_VARIANT ka built-in susfs support check karo"
-          fi
+          cat << 'EOF' >> arch/arm64/configs/gki_defconfig
+          # Kali wireless / external adapter support
+          CONFIG_CFG80211=m
+          CONFIG_MAC80211=m
+          CONFIG_MAC80211_RC_DEFAULT="minstrel_ht"
+          CONFIG_WLAN_VENDOR_ATH=y
+          CONFIG_ATH9K_HTC=m
+          CONFIG_WLAN_VENDOR_REALTEK=y
+          CONFIG_RTL8187=m
+          CONFIG_RTL_CARDS=m
+          CONFIG_USB_ACM=m
+          CONFIG_USB_NET_RNDIS_HOST=m
 
-      # ── 6. BBRv3 patch (WildKernels ka patch set) ──
-      - name: Apply BBRv3 patch
-        if: ${{ inputs.enable_bbrv3 == true }}
-        working-directory: ${{ env.KERNEL_DIR }}
-        run: |
-          git clone --depth=1 https://github.com/WildKernels/kernel_patches.git wild_patches
-          KSRC="${{ steps.paths.outputs.ksrc }}"
-          BBR_PATCH=$(find wild_patches/bbrv3 -iname "*.patch" | head -n1)
-          if [ -n "$BBR_PATCH" ]; then
-            (cd "$KSRC" && patch -p1 --fuzz=3 < "$GITHUB_WORKSPACE/kernel_workspace/$BBR_PATCH") \
-              || echo "::warning::BBRv3 patch clash ho sakta hai NetHunter/SUSFS patches ke sath, log dekh kar manual merge karo"
-          else
-            echo "::warning::wild_patches/bbrv3 mein patch file nahi mili — repo structure check karo"
-          fi
-
-      # ── 7. Droidspaces patch ──
-      - name: Apply Droidspaces patch
-        if: ${{ inputs.enable_droidspaces == true }}
-        working-directory: ${{ env.KERNEL_DIR }}
-        run: |
-          KSRC="${{ steps.paths.outputs.ksrc }}"
-          DS_PATCH=$(find wild_patches -iname "*droidspace*" -iname "*.patch" | head -n1)
-          if [ -n "$DS_PATCH" ]; then
-            (cd "$KSRC" && patch -p1 --fuzz=3 < "$GITHUB_WORKSPACE/kernel_workspace/$DS_PATCH") \
-              || echo "::warning::Droidspaces patch conflict, manual review needed"
-          else
-            echo "::warning::Droidspaces patch nahi mili is repo mein, WildKernels/kernel_patches ka current tree khud verify kar lena"
-          fi
-
-      # ── 8. Kali NetHunter kernel patches ──
-      - name: Apply Kali NetHunter kernel patches
-        if: ${{ inputs.enable_nethunter == true }}
-        working-directory: ${{ env.KERNEL_DIR }}
-        run: |
-          git clone --depth=1 https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-kernel-builder.git nh_builder
-          KSRC="${{ steps.paths.outputs.ksrc }}"
-          # NOTE: yeh repo interactive build.sh menu ke through patches apply karta hai (option 4:
-          # "Apply Nethunter kernel patches"). CI mein hum uske patches/ folder se sirf woh patches
-          # dhoondh kar apply kar rahe hain jo generic hain (wireless injection, HID, USB gadget waghera).
-          # Device-specific defconfig fragments alag se merge karne honge (step 9).
-          if [ -d nh_builder/patches ]; then
-            for p in $(find nh_builder/patches -iname "*.patch" | sort); do
-              echo "Applying: $p"
-              (cd "$KSRC" && patch -p1 --fuzz=3 < "$GITHUB_WORKSPACE/kernel_workspace/$p") \
-                || echo "::warning::NetHunter patch $p apply nahi hua (conflict ya already-applied), skip kiya"
-            done
-          else
-            echo "::warning::nh_builder/patches folder is version mein nahi mila — GitLab repo tree khud browse karke sahi path daalo"
-          fi
-
-      # ── 9. Extra / optional configs merge (Droidspaces, BusyBox-friendly, wireless, USB gadget) ──
-      - name: Merge extra defconfig fragments
-        working-directory: ${{ steps.paths.outputs.ksrc }}
-        run: |
-          cat > /tmp/extra.config << 'EOF'
-          # NetHunter / BusyBox compatibility
-          CONFIG_DEVTMPFS=y
-          CONFIG_DEVTMPFS_MOUNT=y
-          CONFIG_TUN=y
-          CONFIG_TUN=m
-          CONFIG_USB_USBNET=y
-          CONFIG_USB_RTL8152=y
-          CONFIG_USB_NET_RNDIS_HOST=y
-          CONFIG_USB_CONFIGFS=y
-          CONFIG_USB_CONFIGFS_F_HID=y
-          CONFIG_HIDRAW=y
-          CONFIG_NETFILTER_XT_TARGET_TPROXY=y
-          CONFIG_IP_NF_TARGET_MASQUERADE=y
-          CONFIG_IP6_NF_TARGET_MASQUERADE=y
-          CONFIG_IP_SET=y
-          CONFIG_IP_SET_MAX=256
-          CONFIG_NETFILTER_XT_MATCH_TTL=y
-          CONFIG_BLK_DEV_LOOP=y
-          CONFIG_OVERLAY_FS=y
-          CONFIG_ANDROID_PARANOID_NETWORK=n
-          # SUSFS
+          # KernelSU-Next + SUSFS
+          CONFIG_KSU=y
           CONFIG_KSU_SUSFS=y
           CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
           CONFIG_KSU_SUSFS_SUS_PATH=y
           CONFIG_KSU_SUSFS_SUS_MOUNT=y
-          CONFIG_KSU_SUSFS_SUS_KSTAT=y
-          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-          CONFIG_KSU_SUSFS_ENABLE_LOG=y
-          # BBRv3
-          CONFIG_TCP_CONG_ADVANCED=y
-          CONFIG_TCP_CONG_BBR=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+
+          # BBRv3 (config only - patch step above still required for the
+          # actual congestion-control code to exist)
           CONFIG_TCP_CONG_BBR3=y
-          CONFIG_DEFAULT_TCP_CONG="bbr3"
-          CONFIG_NET_SCH_FQ=y
-          CONFIG_NET_SCH_FQ_CODEL=y
+          CONFIG_DEFAULT_BBR3=y
           EOF
-          if [ -n "${{ inputs.extra_defconfig }}" ]; then
-            echo "${{ inputs.extra_defconfig }}" | tr ',' '\n' >> /tmp/extra.config
-          fi
-          ./scripts/kconfig/merge_config.sh -m arch/arm64/configs/${{ inputs.defconfig }} /tmp/extra.config
-          cp .config arch/arm64/configs/${{ inputs.defconfig }}
 
-      # ── 10. Kernel compile (Clang/LLVM, official GKI toolchain) ──
-      - name: Build kernel
-        working-directory: ${{ steps.paths.outputs.ksrc }}
+      # ------------------------------------------------------------------
+      # 8. BUILD
+      #    android12-5.10 predates Bazel-based Kleaf builds, so build.sh is
+      #    the correct entrypoint here (Bazel is required from android13+).
+      #    build.sh auto-downloads the pinned clang toolchain itself.
+      # ------------------------------------------------------------------
+      - name: Build GKI kernel
         run: |
-          export PATH="${{ steps.paths.outputs.clang }}/bin:$PATH"
-          export ARCH=arm64
-          export SUBARCH=arm64
-          make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 ${{ inputs.defconfig }}
-          make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC="ccache clang" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          export BUILD_CONFIG=common/build.config.gki.aarch64
+          LTO=thin build/build.sh 2>&1 | tee build.log
 
-      # ── 11. AnyKernel3 zip package karo (flashable) ──
-      - name: Package AnyKernel3 zip
+      - name: Verify build output
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-          KSRC="${{ steps.paths.outputs.ksrc }}"
-          IMG=$(find "$KSRC/out/arch/arm64/boot" -name "Image" -o -name "Image.gz-dtb" | head -n1)
-          cp "$IMG" anykernel/Image
-          cd anykernel
-          sed -i 's/^device.name1=.*/device.name1=${{ inputs.device_codename }}/' anykernel.sh || true
-          zip -r9 "../NetHunter-GKI510-${{ inputs.device_codename }}-$(date +%Y%m%d).zip" . -x ".git*"
+          test -f out/android12-5.10/dist/Image || { echo "::error::Image not produced"; exit 1; }
+          echo "Kernel Image built:"
+          ls -la out/android12-5.10/dist/
 
-      # ── 12. Upload artifact ──
-      - name: Upload build log
-        if: always()
+      # ------------------------------------------------------------------
+      # 9. ANYKERNEL3 PACKAGING
+      #    NOTE: this uses the upstream AnyKernel3 template. You still need
+      #    to edit anykernel.sh for your device's actual partition layout
+      #    (Infinix Hot 40 Pro boot/dtbo/vendor_boot slots) before flashing -
+      #    the template's defaults target a generic GKI A/B device and are
+      #    not guaranteed correct for this exact model.
+      # ------------------------------------------------------------------
+      - name: Clone AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3 --depth=1 packaging
+
+      - name: Package flashable zip
+        run: |
+          cp common/out/android12-5.10/dist/Image packaging/
+          cd packaging
+          sed -i 's|block=/dev/block/by-name/boot;|block=/dev/block/by-name/boot;\nis_slot_device=1;|g' anykernel.sh
+          zip -r9 "../kali-nethunter-ksunext-susfs-5.10.zip" * -x .git
+
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: build.log
-
-      - name: Upload flashable zip
-        uses: actions/upload-artifact@v4
-        with:
-          name: NetHunter-GKI510-${{ inputs.device_codename }}
-          path: NetHunter-GKI510-*.zip
-          if-no-files-found: error
+          name: kali-nethunter-ksunext-susfs-5.10
+          path: |
+            kali-nethunter-ksunext-susfs-5.10.zip
+            build.log
+          retention-days: 14
