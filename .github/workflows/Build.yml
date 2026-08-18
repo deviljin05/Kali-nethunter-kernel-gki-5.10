@@ -558,6 +558,36 @@ jobs:
           add_if_missing CONFIG_BRIDGE y
           add_if_missing CONFIG_BRIDGE_NETFILTER y
 
+          # --- Core wireless framework. NOTE: CFG80211/MAC80211 are added
+          #     as "=m" (module) here, matching stock GKI convention — NOT
+          #     "=y" (built-in), which is what caused the earlier bootloop.
+          #     add_if_missing still won't touch them if stock already
+          #     defines them in any form, so this only fires on a defconfig
+          #     that genuinely doesn't have them at all. ---
+          add_if_missing CONFIG_WIRELESS y
+          add_if_missing CONFIG_CFG80211 m
+          add_if_missing CONFIG_MAC80211 m
+          add_if_missing CONFIG_MAC80211_LEDS y
+
+          # --- Bluetooth sniffing (external USB BT dongle) ---
+          add_if_missing CONFIG_BT_HCIBTUSB m
+
+          # --- External USB Wi-Fi adapter drivers, in-tree chipsets only
+          #     (no out-of-tree build needed — these ship with mainline
+          #     Linux, just need enabling). Only load when an adapter of
+          #     that chipset is actually plugged into OTG. ---
+          add_if_missing CONFIG_WLAN_VENDOR_ATH y
+          add_if_missing CONFIG_ATH_COMMON m
+          add_if_missing CONFIG_ATH9K_HTC m
+
+          add_if_missing CONFIG_WLAN_VENDOR_REALTEK y
+          add_if_missing CONFIG_RTL_CARDS m
+          add_if_missing CONFIG_RTL8187 m
+          add_if_missing CONFIG_RTL8192CU m
+
+          add_if_missing CONFIG_WLAN_VENDOR_MEDIATEK y
+          add_if_missing CONFIG_MT7601U m
+
       - name: Snapshot pre-build defconfig for post-build diff
         if: ${{ github.event.inputs.enable_nethunter == 'true' }}
         working-directory: kernel_workspace/common/arch/arm64/configs
@@ -639,11 +669,11 @@ jobs:
             exit 1
           fi
           echo "Final module type for Wi-Fi-critical symbols (must stay '=m' or whatever stock already had — should be UNCHANGED from a build with enable_nethunter=false):"
-          for SYM in CONFIG_CFG80211 CONFIG_MAC80211; do
+          for SYM in CONFIG_CFG80211 CONFIG_MAC80211 CONFIG_WIRELESS CONFIG_ATH9K_HTC CONFIG_RTL8187 CONFIG_RTL8192CU CONFIG_MT7601U CONFIG_BT_HCIBTUSB; do
             grep -E "^${SYM}=|^# ${SYM} is not set" "$CFG" || echo "${SYM}: not set"
           done
           echo ""
-          echo "If either symbol above shows '=y' (built-in) instead of '=m' (module) or its previous stock value, STOP — do not flash. That mismatch is what breaks the vendor's prebuilt Wi-Fi vendor_dlkm module and causes a bootloop. Compare against a build with enable_nethunter=false to confirm nothing changed."
+          echo "CONFIG_CFG80211 / CONFIG_MAC80211 specifically: if either shows '=y' (built-in) instead of '=m' (module) or its previous stock value, STOP — do not flash. That mismatch is what breaks the vendor's prebuilt Wi-Fi vendor_dlkm module and causes a bootloop. The other symbols above (ATH9K_HTC, RTL8187, RTL8192CU, MT7601U, BT_HCIBTUSB) are new external-adapter drivers being added as modules — expected to show '=m', harmless either way since they're new capability, not an override of something the vendor's own Wi-Fi already used."
 
       - name: Locate built Image
         working-directory: kernel_workspace
