@@ -192,13 +192,13 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
+          curl -fsSL "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
 
       - name: Fix KernelSU-Next static patch
         working-directory: kernel_workspace/common/KernelSU-Next
         run: |
           set -euo pipefail
-          curl -LSs -o static.patch \
+          curl -fsSL -o static.patch \
             https://raw.githubusercontent.com/WildKernels/GKI_KernelSU_SUSFS/main/.github/actions/kernelsu/patches/static.patch
           patch -p1 --forward < static.patch || true
 
@@ -207,7 +207,7 @@ jobs:
         working-directory: kernel_workspace
         run: |
           set -euo pipefail
-          wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
+          wget -qO- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
 
       - name: Configure Baseband Guard LSM
         if: ${{ github.event.inputs.enable_bbg == 'true' }}
@@ -262,14 +262,14 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${SUBLEVEL}" -le "208" ]; then
-            curl -LSs -o /tmp/0003-lockdep-assert-none-held.patch \
+            curl -fsSL -o /tmp/0003-lockdep-assert-none-held.patch \
               https://raw.githubusercontent.com/WildKernels/GKI_KernelSU_SUSFS/main/.github/actions/ntsync/patches/0003-lockdep-assert-none-held.patch
             patch -p1 -N < /tmp/0003-lockdep-assert-none-held.patch || true
           fi
-          curl -LSs -o /tmp/ntsync_compat_android12-5.10.patch \
+          curl -fsSL -o /tmp/ntsync_compat_android12-5.10.patch \
             https://raw.githubusercontent.com/WildKernels/kernel_patches/main/common/ntsync/ntsync_compat_android12-5.10.patch
           patch -p1 < /tmp/ntsync_compat_android12-5.10.patch || true
-          curl -LSs -o /tmp/ntsync_base.patch \
+          curl -fsSL -o /tmp/ntsync_base.patch \
             https://raw.githubusercontent.com/WildKernels/kernel_patches/main/common/ntsync/ntsync_base.patch
           patch -p1 < /tmp/ntsync_base.patch || true
           echo "CONFIG_NTSYNC=y" >> arch/arm64/configs/gki_defconfig
@@ -279,12 +279,12 @@ jobs:
         run: |
           set -euo pipefail
           DROIDSPACES_KABI_OK="true"
-          curl -LSs -o /tmp/droidspaces_sysvipc_kabi.patch \
+          curl -fsSL -o /tmp/droidspaces_sysvipc_kabi.patch \
             https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch
           if ! patch -p1 < /tmp/droidspaces_sysvipc_kabi.patch; then
             DROIDSPACES_KABI_OK="false"
           fi
-          curl -LSs -o /tmp/droidspaces_posix_mqueue_kabi.patch \
+          curl -fsSL -o /tmp/droidspaces_posix_mqueue_kabi.patch \
             https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch
           if ! patch -p1 < /tmp/droidspaces_posix_mqueue_kabi.patch; then
             DROIDSPACES_KABI_OK="false"
@@ -364,11 +364,7 @@ jobs:
           set -euo pipefail
           export KBUILD_BUILD_USER="builder"
           export KBUILD_BUILD_HOST="ci"
-          LTO=thin \
-          BUILD_CONFIG=common/build.config.gki.aarch64 \
-          USE_CCACHE=1 \
-          CCACHE_DIR="${CCACHE_DIR}" \
-          build/build.sh -j"$(nproc)"
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 USE_CCACHE=1 CCACHE_DIR="${CCACHE_DIR}" build/build.sh -j"$(nproc)"
 
       - name: Verify final configs
         working-directory: kernel_workspace
