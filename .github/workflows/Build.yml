@@ -140,11 +140,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${SUBLEVEL}" -le "43" ]; then
-            perl -i -pe 's/(int|size_t)s+this_lens*=s*min_ts*(s*\u0001s*,/size_t this_len = min_t(size_t,/' fs/proc/base.c
+            perl -i -pe 's/(int|size_t)\s+this_len\s*=\s*min_t\s*\(\s*\1\s*,/size_t this_len = min_t(size_t,/' fs/proc/base.c
           fi
           if [ "${SUBLEVEL}" -le "117" ]; then
-            sed -i '/^[[:space:]]*/*$/,/^[[:space:]]*u32 mask = mark->mask & IN_ALL_EVENTS;$/d' fs/notify/fdinfo.c
-            perl -i -pe 's/\bmask,s*mark->ignored_mask/inotify_mark_user_mask(mark)/g' fs/notify/fdinfo.c
+            sed -i '\#^[[:space:]]*/\*$#,\#^[[:space:]]*u32 mask = mark->mask & IN_ALL_EVENTS;$#d' fs/notify/fdinfo.c
+            perl -i -pe 's/\bmask,\s*mark->ignored_mask/inotify_mark_user_mask(mark)/g' fs/notify/fdinfo.c
             perl -i -pe 's/ignored_mask:%x/ignored_mask:0/g' fs/notify/fdinfo.c
           fi
 
@@ -168,15 +168,15 @@ jobs:
             sed -i 's/^size_t this_len = min_t(size_t, count, PAGE_SIZE);$/int this_len = min_t(int, count, PAGE_SIZE);/' fs/proc/base.c
           fi
           if [ "${SUBLEVEL}" -le "117" ]; then
-            perl -i -pe 's/^(s+if (inode) {)/$1
+            perl -i -pe 's#^(\s+if \(inode\) \{)#$1
 \t\t/*
 \t\t * IN_ALL_EVENTS represents all of the mask bits
 \t\t * that we expose to userspace.  There is at
 \t\t * least one bit (FS_EVENT_ON_CHILD) which is
 \t\t * used only internally to the kernel.
 \t\t */
-\t\tu32 mask = mark->mask & IN_ALL_EVENTS;/m' fs/notify/fdinfo.c
-            perl -i -pe 's/\binotify_mark_user_mask(mark)/mask, mark->ignored_mask/g' fs/notify/fdinfo.c
+\t\tu32 mask = mark->mask & IN_ALL_EVENTS;#m' fs/notify/fdinfo.c
+            perl -i -pe 's/\binotify_mark_user_mask\(mark\)/mask, mark->ignored_mask/g' fs/notify/fdinfo.c
             perl -i -pe 's/ignored_mask:0/ignored_mask:%x/g' fs/notify/fdinfo.c
           fi
 
@@ -232,7 +232,7 @@ jobs:
           BBRV3_PATCH_APPLIED="false"
           if [ -f "$BBRV3_PATCH" ] && patch -p1 < "$BBRV3_PATCH"; then
             BBRV3_PATCH_APPLIED="true"
-            DETECTED="$(grep -rhoE '.names*=s*"[a-zA-Z0-9_]+"' net/ipv4/tcp_bbr*.c 2>/dev/null | grep -oE '"[a-zA-Z0-9_]+"' | tr -d '"' | head -n1 || true)"
+            DETECTED="$(grep -rhoE '\.name\s*=\s*"[a-zA-Z0-9_]+"' net/ipv4/tcp_bbr*.c 2>/dev/null | grep -oE '"[a-zA-Z0-9_]+"' | tr -d '"' | head -n1 || true)"
             [ -n "$DETECTED" ] && BBR_CONG_NAME="$DETECTED"
           fi
           echo "BBR_CONG_NAME=${BBR_CONG_NAME}" >> "$GITHUB_ENV"
@@ -251,7 +251,7 @@ jobs:
             if [ "${BBRV3_PATCH_APPLIED}" = "true" ]; then
               echo "CONFIG_TCP_CONG_BBR3=y"
             fi
-            echo "CONFIG_DEFAULT_TCP_CONG="${BBR_CONG_NAME}""
+            echo "CONFIG_DEFAULT_TCP_CONG=${BBR_CONG_NAME}"
             echo "CONFIG_NET_SCH_FQ=y"
             echo "CONFIG_NET_SCH_FQ_CODEL=y"
             echo "CONFIG_NET_SCH_CAKE=y"
