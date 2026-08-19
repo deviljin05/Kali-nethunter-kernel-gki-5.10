@@ -52,24 +52,24 @@ jobs:
       - name: Install repo tool
         run: |
           mkdir -p ~/bin
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> "$GITHUB_PATH"
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Set up ccache
-        run: mkdir -p "${{ env.CCACHE_DIR }}"
+        run: mkdir -p "${CCACHE_DIR}"
 
       - name: Resolve manifest branch and optional pinned release tag
         run: |
           set -euo pipefail
           INPUT="${{ github.event.inputs.os_patch_level }}"
           if [ "${INPUT}" = "lts" ]; then
-            MANIFEST_REF="common-${{ env.VERSION }}-lts"
+            MANIFEST_REF="common-${VERSION}-lts"
             PIN_TAG=""
           else
-            MANIFEST_REF="common-${{ env.VERSION }}"
+            MANIFEST_REF="common-${VERSION}"
             PIN_TAG="${INPUT}"
           fi
           echo "MANIFEST_REF=${MANIFEST_REF}" >> "$GITHUB_ENV"
@@ -78,23 +78,25 @@ jobs:
       - name: Sync GKI kernel source
         run: |
           set -euo pipefail
-          mkdir kernel_workspace && cd kernel_workspace
-          repo init -u https://android.googlesource.com/kernel/manifest \
-            -b "${MANIFEST_REF}" --depth=1
+          mkdir -p kernel_workspace
+          cd kernel_workspace
+          repo init -u https://android.googlesource.com/kernel/manifest -b "${MANIFEST_REF}" --depth=1
           repo sync -c --current-branch --no-clone-bundle --no-tags -j"$(nproc)"
 
-      - name: Pin kernel/common to exact release tag (if requested)
+      - name: Pin kernel/common to exact release tag
         if: ${{ env.PIN_TAG != '' }}
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
           REMOTE_NAME="$(git remote | head -n1)"
+          [ -n "${REMOTE_NAME}" ]
           git fetch --depth=1 "${REMOTE_NAME}" "refs/tags/${PIN_TAG}:refs/tags/${PIN_TAG}"
           git checkout "refs/tags/${PIN_TAG}"
 
       - name: Detect kernel sublevel
         working-directory: kernel_workspace
         run: |
+          set -euo pipefail
           SUBLEVEL="$(grep -m1 '^SUBLEVEL = ' common/Makefile | awk '{print $3}')"
           echo "SUBLEVEL=${SUBLEVEL}" >> "$GITHUB_ENV"
 
@@ -181,6 +183,7 @@ jobs:
       - name: Apply SUSFS show_pad fix
         working-directory: kernel_workspace/common
         run: |
+          set -euo pipefail
           if [ "${SUBLEVEL}" -le "209" ]; then
             sed -i -e 's/goto show_pad;/return 0;/' ./fs/proc/task_mmu.c
           fi
@@ -364,7 +367,7 @@ jobs:
           LTO=thin \
           BUILD_CONFIG=common/build.config.gki.aarch64 \
           USE_CCACHE=1 \
-          CCACHE_DIR="${{ env.CCACHE_DIR }}" \
+          CCACHE_DIR="${CCACHE_DIR}" \
           build/build.sh -j"$(nproc)"
 
       - name: Verify final configs
