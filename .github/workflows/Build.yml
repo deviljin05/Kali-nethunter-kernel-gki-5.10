@@ -338,7 +338,11 @@ jobs:
             echo "CONFIG_USB_CONFIGFS_EEM=y"
             echo "CONFIG_USB_CONFIGFS_MASS_STORAGE=y"
             echo "CONFIG_USB_CONFIGFS_F_HID=y"
+            echo "CONFIG_USB_CONFIGFS_F_FS=y"
+            echo "CONFIG_USB_CONFIGFS_UEVENT=y"
             echo "CONFIG_USB_ACM=y"
+            echo "CONFIG_HIDRAW=y"
+            echo "CONFIG_UHID=y"
           } >> gki_defconfig
 
       - name: Apply custom kernel branding
