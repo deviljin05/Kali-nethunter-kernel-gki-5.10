@@ -28,7 +28,7 @@ on:
         type: boolean
         default: true
       enable_kali_nethunter:
-        description: 'Apply Kali NetHunter wifi-injection configs/patches (EXPERIMENTAL, fail-soft, unverified on your device)'
+        description: 'Enable Kali NetHunter USB gadget / HID / configfs support (stable, no chipset-specific wifi injection patches)'
         type: boolean
         default: true
       ksu_variant:
@@ -105,11 +105,29 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           echo "KSU integration attempted."
 
-      - name: Clone SUSFS4KSU (WildKernels fork, tracks latest fixes)
+      - name: Auto-detect latest SUSFS version/tag
+        run: |
+          # Check the WildKernels susfs4ksu repo's tags AND the upstream simonpunk/susfs4ksu
+          # source for whichever is newest, so we always build against the current latest
+          # SUSFS release rather than a number pinned in this workflow file.
+          LATEST_TAG=$(curl -s "https://api.github.com/repos/WildKernels/susfs4ksu/tags" | \
+            grep -m1 '"name"' | sed -E 's/.*"name": *"([^"]+)".*/\1/' || true)
+          if [ -n "$LATEST_TAG" ]; then
+            echo "Detected latest SUSFS tag: $LATEST_TAG"
+            echo "SUSFS_REF=$LATEST_TAG" >> "$GITHUB_ENV"
+          else
+            echo "No tags found on repo, will use branch HEAD (still 'latest' since the branch tracks upstream commits directly)."
+            echo "SUSFS_REF=${{ github.event.inputs.susfs_branch }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Clone SUSFS4KSU (auto-detected latest)
         run: |
           cd "$KERNEL_ROOT"
-          git clone --depth=1 -b "${{ github.event.inputs.susfs_branch }}" \
-            https://github.com/WildKernels/susfs4ksu.git susfs4ksu
+          if ! git clone --depth=1 -b "$SUSFS_REF" https://github.com/WildKernels/susfs4ksu.git susfs4ksu 2>/dev/null; then
+            echo "::warning::Detected ref '$SUSFS_REF' isn't a valid branch on this repo (likely a release tag from a different branch/kernel target) - falling back to the requested branch HEAD, which always carries the latest fixes for that branch."
+            git clone --depth=1 -b "${{ github.event.inputs.susfs_branch }}" \
+              https://github.com/WildKernels/susfs4ksu.git susfs4ksu
+          fi
           cd susfs4ksu
           git log -1 --oneline
 
@@ -131,6 +149,17 @@ jobs:
           fi
           cp -r ../susfs4ksu/kernel_patches/fs/* ./fs/ 2>/dev/null || true
           cp -r ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/ 2>/dev/null || true
+
+      - name: Report applied SUSFS version
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          VER=$(grep -rhoE 'SUSFS_VERSION[[:space:]]+"[^"]+"' common/ 2>/dev/null | head -n1 || true)
+          echo "### SUSFS version actually applied to this build" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$VER" ]; then
+            echo "\`$VER\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Could not read SUSFS_VERSION define from source (patch may have failed above) - check the SUSFS patch step logs." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Apply Baseband Guard (BBG)
         if: ${{ github.event.inputs.enable_bbg == 'true' }}
@@ -177,40 +206,29 @@ jobs:
               echo "$cfg=y" >> ./arch/arm64/configs/gki_defconfig
           done
 
-      - name: Apply Kali NetHunter wifi-injection support (experimental)
+      - name: Apply Kali NetHunter USB gadget / HID / configfs support
         if: ${{ github.event.inputs.enable_kali_nethunter == 'true' }}
         working-directory: ${{ env.KERNEL_ROOT }}/common
         run: |
-          # EXPERIMENTAL / BEST-EFFORT: mac80211 monitor-mode + injection patches are
-          # highly chipset-driver specific. This step only enables the generic wireless
-          # stack options that NetHunter's userspace tooling expects, and attempts (fail-soft)
-          # to pull the community mac80211 injection patch set. It does NOT guarantee
-          # injection will work on your exact wifi chipset/driver, and it will NOT
-          # touch anything if the patch fails to apply - kernel still builds either way.
-          for cfg in CONFIG_MAC80211 CONFIG_CFG80211 CONFIG_CFG80211_WEXT \
-                     CONFIG_MAC80211_MESH CONFIG_WIRELESS_EXT CONFIG_WEXT_CORE \
-                     CONFIG_WEXT_PROC CONFIG_WEXT_SPY CONFIG_USB_NET_RNDIS_WLAN; do
+          # STABLE, non-chipset-specific NetHunter support: USB gadget + configfs + HID
+          # (BadUSB / HID keyboard-injection attacks, USB gadget tooling). No wifi
+          # monitor-mode/injection patches here - those were dropped as experimental
+          # and unverified for this device's chipset.
+          for cfg in CONFIG_USB_GADGET CONFIG_USB_LIBCOMPOSITE CONFIG_USB_CONFIGFS \
+                     CONFIG_USB_CONFIGFS_UEVENT CONFIG_USB_CONFIGFS_F_HID \
+                     CONFIG_USB_CONFIGFS_F_MASS_STORAGE CONFIG_USB_CONFIGFS_F_ACC \
+                     CONFIG_HIDRAW CONFIG_UHID; do
             grep -q "^$cfg=" ./arch/arm64/configs/gki_defconfig && \
               sed -i "s/^$cfg=.*/$cfg=y/" ./arch/arm64/configs/gki_defconfig || \
               echo "$cfg=y" >> ./arch/arm64/configs/gki_defconfig
           done
-
-          git clone --depth=1 https://github.com/offensive-security/kali-nethunter-kernel-mac80211-patches.git ../nh_tmp 2>/dev/null || true
-          if [ -d ../nh_tmp ]; then
-            for p in ../nh_tmp/*.patch; do
-              patch -p1 --fuzz=3 --dry-run < "$p" >/dev/null 2>&1 && patch -p1 --fuzz=3 < "$p" || \
-                echo "::warning::NetHunter patch $p did not apply cleanly for this kernel/device combo, skipped."
-            done
-          else
-            echo "::warning::NetHunter injection patch source unreachable - configs enabled but no kernel-side injection patch applied. Consider whether your MT6789 wifi driver even supports monitor mode before relying on this."
-          fi
 
       - name: Safety - re-run defconfig and verify no duplicate/broken keys
         working-directory: ${{ env.KERNEL_ROOT }}/common
         run: |
           sort -u -t= -k1,1 ./arch/arm64/configs/gki_defconfig -o ./arch/arm64/configs/gki_defconfig
           echo "Defconfig deduplicated. Final Droidspaces/NTSync/NetHunter related entries:"
-          grep -E "NAMESPACES|USER_NS|SYSVIPC|POSIX_MQUEUE|NTSYNC|MAC80211|CFG80211" ./arch/arm64/configs/gki_defconfig || true
+          grep -E "NAMESPACES|USER_NS|SYSVIPC|POSIX_MQUEUE|NTSYNC|USB_CONFIGFS|USB_GADGET|HIDRAW|UHID" ./arch/arm64/configs/gki_defconfig || true
 
       - name: Build kernel
         working-directory: ${{ env.KERNEL_ROOT }}
