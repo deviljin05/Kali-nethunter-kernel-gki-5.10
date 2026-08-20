@@ -1,4 +1,4 @@
-name: Build Custom GKI Kernel (Wild KSU + SUSFS + BBRv3 + NetHunter)
+name: Build Custom GKI Kernel (Wild KSU + SUSFS + BBRv3 + Full HID Support)
 
 on:
   workflow_dispatch:
@@ -19,12 +19,8 @@ on:
         description: "Enable Baseband Guard (BBG)"
         required: true
         default: "true"
-      enable_nethunter:
-        description: "Enable NetHunter HID / USB gadget configs"
-        required: true
-        default: "true"
-      enable_can:
-        description: "Enable CAN bus support (SocketCAN + USB-CAN adapters)"
+      enable_hid:
+        description: "Enable full USB HID gadget support"
         required: true
         default: "true"
 
@@ -324,8 +320,8 @@ jobs:
             echo "CONFIG_TMPFS_XATTR=y"
           } >> gki_defconfig
 
-      - name: Set NetHunter USB gadget configs
-        if: ${{ github.event.inputs.enable_nethunter == 'true' }}
+      - name: Set full USB HID gadget configs
+        if: ${{ github.event.inputs.enable_hid == 'true' }}
         run: |
           cd kernel_workspace/common/arch/arm64/configs
           {
@@ -349,20 +345,6 @@ jobs:
             echo "CONFIG_UHID=y"
           } >> gki_defconfig
 
-      - name: Set additional USB configfs gadget functions
-        if: ${{ github.event.inputs.enable_nethunter == 'true' }}
-        run: |
-          cd kernel_workspace/common/arch/arm64/configs
-          {
-            # Loopback / SourceSink test function (used by USB gadget test tools)
-            echo "CONFIG_USB_CONFIGFS_F_LB_SS=y"
-            # USB printer gadget function
-            echo "CONFIG_USB_CONFIGFS_F_PRINTER=y"
-            # USB Audio Class 1.0 gadget function (legacy audio)
-            echo "CONFIG_USB_CONFIGFS_F_UAC1=y"
-            echo "CONFIG_USB_CONFIGFS_F_UAC1_LEGACY=y"
-          } >> gki_defconfig
-
       - name: Set IIO / PCI endpoint configfs configs
         run: |
           cd kernel_workspace/common/arch/arm64/configs
@@ -376,63 +358,6 @@ jobs:
             # dependency limit, not a mistake in this step.
             echo "CONFIG_PCI_ENDPOINT=y"
             echo "CONFIG_PCI_ENDPOINT_CONFIGFS=y"
-          } >> gki_defconfig
-
-      - name: Set NetHunter external Wi-Fi adapter + USB-serial configs
-        if: ${{ github.event.inputs.enable_nethunter == 'true' }}
-        run: |
-          cd kernel_workspace/common/arch/arm64/configs
-          {
-            # In-tree external USB Wi-Fi adapter drivers with monitor-mode/injection
-            # support out of the box (since MT6789's internal chip does not).
-            # These only matter if you plug an OTG adapter with one of these chipsets in.
-            echo "CONFIG_ATH9K_HTC=m"
-            echo "CONFIG_RT2X00=m"
-            echo "CONFIG_RT2800USB=m"
-            echo "CONFIG_RT2800USB_RT53XX=y"
-            echo "CONFIG_RT2800USB_RT55XX=y"
-            echo "CONFIG_RTL8XXXU=m"
-            echo "CONFIG_MT7601U=m"
-            echo "CONFIG_USB_NET_RNDIS_HOST=y"
-            echo "CONFIG_USB_NET_CDC_ETHER=y"
-            echo "CONFIG_USB_NET_CDC_NCM=y"
-            echo "CONFIG_USB_USBNET=y"
-            echo "CONFIG_CFG80211=y"
-            echo "CONFIG_MAC80211=y"
-            echo "CONFIG_PACKET=y"
-            echo "CONFIG_PACKET_DIAG=y"
-            # USB-serial support (Kali NetHunter app checks these too, used for
-            # various flashing/serial-console tools)
-            echo "CONFIG_USB_SERIAL=m"
-            echo "CONFIG_USB_SERIAL_CP210X=m"
-            echo "CONFIG_USB_SERIAL_FTDI_SIO=m"
-            echo "CONFIG_USB_SERIAL_CH341=m"
-            echo "CONFIG_USB_SERIAL_PL2303=m"
-          } >> gki_defconfig
-
-      - name: Set CAN bus (SocketCAN + USB-CAN adapter) configs
-        if: ${{ github.event.inputs.enable_can == 'true' }}
-        run: |
-          cd kernel_workspace/common/arch/arm64/configs
-          {
-            # Core SocketCAN stack
-            echo "CONFIG_CAN=y"
-            echo "CONFIG_CAN_RAW=y"
-            echo "CONFIG_CAN_BCM=y"
-            echo "CONFIG_CAN_GW=m"
-            echo "CONFIG_CAN_J1939=m"
-            echo "CONFIG_CAN_ISOTP=m"
-            echo "CONFIG_CAN_DEV=y"
-            echo "CONFIG_CAN_VCAN=m"
-            echo "CONFIG_CAN_SLCAN=m"
-            # Common USB-CAN adapters (CANable/candleLight, PEAK, EMS, kvaser etc.)
-            # These are only used if a matching OTG adapter is plugged in.
-            echo "CONFIG_CAN_GS_USB=m"
-            echo "CONFIG_CAN_PEAK_USB=m"
-            echo "CONFIG_CAN_EMS_USB=m"
-            echo "CONFIG_CAN_KVASER_USB=m"
-            echo "CONFIG_CAN_MCBA_USB=m"
-            echo "CONFIG_CAN_8DEV_USB=m"
           } >> gki_defconfig
 
       - name: Apply custom kernel branding
@@ -456,11 +381,11 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          # We've added new =m modules (CAN, NetHunter Wi-Fi/serial adapters) that
-          # aren't in the upstream android/gki_aarch64_modules allow-list. The GKI
-          # build compares the generated modules.order against the file pointed to
-          # by MODULES_ORDER (usually android/gki_aarch64_modules) and fails with
-          # "modules list out of date" on any mismatch. Blank MODULES_ORDER in every
+          # We've added new =m modules that aren't in the upstream
+          # android/gki_aarch64_modules allow-list. The GKI build compares the
+          # generated modules.order against the file pointed to by MODULES_ORDER
+          # (usually android/gki_aarch64_modules) and fails with "modules list
+          # out of date" on any mismatch. Blank MODULES_ORDER in every
           # build.config* so build.sh skips that diff check entirely. This only
           # disables the build-time bookkeeping comparison — it does not change
           # which modules get compiled, built into the Image, or loaded at runtime,
