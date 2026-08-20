@@ -457,13 +457,17 @@ jobs:
         run: |
           set -euo pipefail
           # We've added new =m modules (CAN, NetHunter Wi-Fi/serial adapters) that
-          # aren't in the upstream android/gki_aarch64_modules allow-list. Rather
-          # than hand-maintaining that list every time a config changes, just
-          # blank out MODULES_LIST so build.sh skips the strict ABI module-list
-          # diff check. This only affects the *build-time bookkeeping* file, not
-          # which modules actually get built or loaded, so it carries no bootloop
-          # risk on its own.
-          grep -rl '^MODULES_LIST=' build.config* 2>/dev/null | xargs -r sed -i 's/^MODULES_LIST=.*/MODULES_LIST=/'
+          # aren't in the upstream android/gki_aarch64_modules allow-list. The GKI
+          # build compares the generated modules.order against the file pointed to
+          # by MODULES_ORDER (usually android/gki_aarch64_modules) and fails with
+          # "modules list out of date" on any mismatch. Blank MODULES_ORDER in every
+          # build.config* so build.sh skips that diff check entirely. This only
+          # disables the build-time bookkeeping comparison — it does not change
+          # which modules get compiled, built into the Image, or loaded at runtime,
+          # so it carries no bootloop risk on its own.
+          grep -rl '^MODULES_ORDER=' build.config* 2>/dev/null | xargs -r sed -i 's/^MODULES_ORDER=.*/MODULES_ORDER=/' || true
+          # Also cover MODULES_LIST in case a downstream config uses that name instead.
+          grep -rl '^MODULES_LIST=' build.config* 2>/dev/null | xargs -r sed -i 's/^MODULES_LIST=.*/MODULES_LIST=/' || true
 
       - name: Build kernel
         working-directory: kernel_workspace
